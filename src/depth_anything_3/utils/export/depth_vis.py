@@ -30,6 +30,8 @@ def export_to_depth_vis(
 
     images_u8 = prediction.processed_images  # (N,H,W,3) uint8
 
+    vis_frames = []
+
     os.makedirs(os.path.join(export_dir, "depth_vis"), exist_ok=True)
     for idx in range(prediction.depth.shape[0]):
         depth_vis = visualize_depth(prediction.depth[idx])
@@ -39,3 +41,45 @@ def export_to_depth_vis(
         vis_image = np.concatenate([image_vis, depth_vis], axis=1)
         save_path = os.path.join(export_dir, f"depth_vis/{idx:04d}.jpg")
         imageio.imwrite(save_path, vis_image, quality=95)
+
+        vis_frames.append(vis_image)
+    
+    save_path = os.path.join(export_dir, f"depth_vis/depth_vis.mp4")
+    imageio.mimsave(save_path, vis_frames, fps=10)
+
+def export_to_depth_video(
+    prediction: Prediction,
+    export_dir: str,
+):
+    # Use prediction.processed_images, which is already processed image data
+    if prediction.processed_images is None:
+        raise ValueError("prediction.processed_images is required but not available")
+
+    images_u8 = prediction.processed_images  # (N,H,W,3) uint8
+
+    image_frames = []
+    depth_frames = []
+
+    depth = prediction.depth
+
+    vmin = np.nanpercentile(depth, 1)
+    vmax = np.nanpercentile(depth, 99)
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+
+    # normalize -> uint8
+    depth = (depth - vmin) / (vmax - vmin)
+    depth = np.clip(depth, 0.0, 1.0)
+    depth = (depth * 255).astype(np.uint8)          # (N,H,W)
+
+    # grayscale -> 3ch (safer for mp4 encoders)
+    depth = np.repeat(depth[..., None], 3, axis=-1)  # (N,H,W,3)
+
+
+    os.makedirs(os.path.join(export_dir, "depth_vis"), exist_ok=True)
+    
+    save_path = os.path.join(export_dir, f"depth_vis/rgb_video.mp4")
+    imageio.mimsave(save_path, images_u8.astype(np.uint8), fps=10)
+
+    save_path = os.path.join(export_dir, f"depth_vis/depth_video.mp4")
+    imageio.mimsave(save_path, depth, fps=10)

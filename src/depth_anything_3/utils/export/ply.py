@@ -17,11 +17,14 @@ from __future__ import annotations
 import os
 import numpy as np
 import trimesh
+import json
 
 from depth_anything_3.specs import Prediction
 from depth_anything_3.utils.logger import logger
 
 from .depth_vis import export_to_depth_vis
+from .glb import _depths_to_world_points_with_colors
+from .common import depths_to_world_points_with_colors_torch, _filter_and_downsample
 
 
 def set_sky_depth(prediction: Prediction, sky_mask: np.ndarray, sky_depth_def: float = 98.0):
@@ -49,14 +52,9 @@ def get_conf_thresh(
     return conf_thresh
 
 
-def export_to_glb(
+def export_to_ply(
     prediction: Prediction,
     export_dir: str,
-    points=None,
-    colors=None,
-    align_matrix=None,
-    points_xyf=None,
-    filtering_mask=None,
     num_max_points: int = 1_000_000,
     conf_thresh: float = 1.05,
     filter_black_bg: bool = False,
@@ -66,7 +64,8 @@ def export_to_glb(
     sky_depth_def: float = 98.0,
     show_cameras: bool = True,
     camera_size: float = 0.03,
-    export_depth_vis: bool = True,
+    export_depth_vis: bool = False,
+    verbose: bool = True,
 ) -> str:
     """Generate a 3D point cloud and camera wireframes and export them as a ``.glb`` file.
 
@@ -109,9 +108,9 @@ def export_to_glb(
     assert (
         prediction.conf is not None
     ), "Export to GLB: prediction.conf is required but not available"
-    logger.info(f"conf_thresh_percentile: {conf_thresh_percentile}")
-    logger.info(f"num max points: {num_max_points}")
-    logger.info(f"Exporting to GLB with num_max_points: {num_max_points}")
+    # logger.info(f"conf_thresh_percentile: {conf_thresh_percentile}")
+    # logger.info(f"num max points: {num_max_points}")
+    # logger.info(f"Exporting to GLB with num_max_points: {num_max_points}")
     if prediction.processed_images is None:
         raise ValueError("prediction.processed_images is required but not available")
 
@@ -126,68 +125,71 @@ def export_to_glb(
         prediction.conf[(prediction.processed_images < 16).all(axis=-1)] = 1.0
     if filter_white_bg:
         prediction.conf[(prediction.processed_images >= 240).all(axis=-1)] = 1.0
-    conf_thr = get_conf_thresh(
-        prediction,
-        getattr(prediction, "sky_mask", None),
-        conf_thresh,
-        conf_thresh_percentile,
-        ensure_thresh_percentile,
-    )
+    # conf_thr = get_conf_thresh(
+    #     prediction,
+    #     getattr(prediction, "sky_mask", None),
+    #     conf_thresh,
+    #     conf_thresh_percentile,
+    #     ensure_thresh_percentile,
+    # )
+
+    conf_thr = np.percentile(prediction.conf, conf_thresh_percentile)
+    if verbose:
+        print(conf_thr)
+        print(prediction.conf.mean())
+        print(prediction.conf.max())
+        print(prediction.conf.min())
 
     # # 4) Back-project to world coordinates and get colors (world frame)
-    points, colors = _depths_to_world_points_with_colors(
+    # points, colors = _depths_to_world_points_with_colors(
+    #     prediction.depth,
+    #     prediction.intrinsics,
+    #     prediction.extrinsics,  # w2c
+    #     images_u8,
+    #     prediction.conf,
+    #     conf_thr,
+    # )
+
+    points, colors = depths_to_world_points_with_colors_torch(
         prediction.depth,
         prediction.intrinsics,
         prediction.extrinsics,  # w2c
         images_u8,
         prediction.conf,
         conf_thr,
+        alignment_transform=True,
     )
-
-    # 5) Based on first camera orientation + glTF axis system, center by point cloud,
-    # construct alignment transform, and apply to point cloud
-    A = _compute_alignment_transform_first_cam_glTF_center_by_points(
-        prediction.extrinsics[0], points
-    )  # (4,4)
-    # A = align_matrix
-
-    if points.shape[0] > 0:
-        points = trimesh.transform_points(points, A)
 
     # 6) Clean + downsample
     points, colors = _filter_and_downsample(points, colors, num_max_points)
 
-    # 7) Assemble scene (add point cloud first)
-    scene = trimesh.Scene()
-    if scene.metadata is None:
-        scene.metadata = {}
-    scene.metadata["hf_alignment"] = A  # For camera wireframes and external reuse
+    if verbose:
+        logger.info(f"After filtering and downsampling, exporting {len(points)} points to PLY")
 
     if points.shape[0] > 0:
         pc = trimesh.points.PointCloud(vertices=points, colors=colors)
-        scene.add_geometry(pc)
-
-    # 8) Draw cameras (wireframe pyramids), using the same transform A
-    if show_cameras and prediction.intrinsics is not None and prediction.extrinsics is not None:
-        scene_scale = _estimate_scene_scale(points, fallback=1.0)
-        H, W = prediction.depth.shape[1:]
-        _add_cameras_to_scene(
-            scene=scene,
-            K=prediction.intrinsics,
-            ext_w2c=prediction.extrinsics,
-            image_sizes=[(H, W)] * prediction.depth.shape[0],
-            scale=scene_scale * camera_size,
-        )
+        # scene.add_geometry(pc)
+    else:
+        print("\n\npoint cloud is empty!\n\n")
 
     # 9) Export
     os.makedirs(export_dir, exist_ok=True)
-    out_path = os.path.join(export_dir, "scene.glb")
-    scene.export(out_path)
+    ply_out_path = os.path.join(export_dir, "scene.ply")
+    # cam_out_path = os.path.join(export_dir, "camera_params.npz")
+    pc.export(ply_out_path)
 
-    if export_depth_vis:
-        export_to_depth_vis(prediction, export_dir)
-        os.system(f"cp -r {export_dir}/depth_vis/0000.jpg {export_dir}/scene.jpg")
-    return out_path
+    # w2c_ext = np.zeros((len(prediction.extrinsics), 4, 4), dtype=np.float32)
+    # for i in range(len(prediction.extrinsics)):
+    #     w2c_ext[i] = _as_homogeneous44(prediction.extrinsics[i])
+    
+    # np.savez(cam_out_path,
+    #          extrinsics=w2c_ext,
+    #          intrinsics=prediction.intrinsics)
+
+    # if export_depth_vis:
+    #     export_to_depth_vis(prediction, export_dir)
+    #     os.system(f"cp -r {export_dir}/depth_vis/0000.jpg {export_dir}/scene.jpg")
+    return ply_out_path
 
 
 # =========================
@@ -206,57 +208,6 @@ def _as_homogeneous44(ext: np.ndarray) -> np.ndarray:
         H[:3, :4] = ext
         return H
     raise ValueError(f"extrinsic must be (4,4) or (3,4), got {ext.shape}")
-
-
-def _depths_to_world_points_with_colors(
-    depth: np.ndarray,
-    K: np.ndarray,
-    ext_w2c: np.ndarray,
-    images_u8: np.ndarray,
-    conf: np.ndarray | None,
-    conf_thr: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    For each frame, transform (u,v,1) through K^{-1} to get rays,
-    multiply by depth to camera frame, then use (w2c)^{-1} to transform to world frame.
-    Simultaneously extract colors.
-    """
-    N, H, W = depth.shape
-    us, vs = np.meshgrid(np.arange(W), np.arange(H))
-    ones = np.ones_like(us)
-    pix = np.stack([us, vs, ones], axis=-1).reshape(-1, 3)  # (H*W,3)
-
-    pts_all, col_all = [], []
-
-    for i in range(N):
-        d = depth[i]  # (H,W)
-        valid = np.isfinite(d) & (d > 0)
-        if conf is not None:
-            valid &= conf[i] >= conf_thr
-        if not np.any(valid):
-            continue
-
-        d_flat = d.reshape(-1)
-        vidx = np.flatnonzero(valid.reshape(-1))
-
-        K_inv = np.linalg.inv(K[i])  # (3,3)
-        c2w = np.linalg.inv(_as_homogeneous44(ext_w2c[i]))  # (4,4)
-
-        rays = K_inv @ pix[vidx].T  # (3,M)
-        Xc = rays * d_flat[vidx][None, :]  # (3,M)
-        Xc_h = np.vstack([Xc, np.ones((1, Xc.shape[1]))])
-        Xw = (c2w @ Xc_h)[:3].T.astype(np.float32)  # (M,3)
-
-        cols = images_u8[i].reshape(-1, 3)[vidx].astype(np.uint8)  # (M,3)
-
-        pts_all.append(Xw)
-        col_all.append(cols)
-
-    if len(pts_all) == 0:
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
-
-    return np.concatenate(pts_all, 0), np.concatenate(col_all, 0)
-
 
 def _filter_and_downsample(points: np.ndarray, colors: np.ndarray, num_max: int):
     if points.shape[0] == 0:

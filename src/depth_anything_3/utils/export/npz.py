@@ -19,7 +19,7 @@ from depth_anything_3.specs import Prediction
 from depth_anything_3.utils.parallel_utils import async_call
 
 
-@async_call
+# @async_call
 def export_to_npz(
     prediction: Prediction,
     export_dir: str,

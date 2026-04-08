@@ -133,6 +133,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
     def inference(
         self,
         image: list[np.ndarray | Image.Image | str],
+        mask: list[np.ndarray | Image.Image | str] = None,
         extrinsics: np.ndarray | None = None,
         intrinsics: np.ndarray | None = None,
         align_to_input_ext_scale: bool = True,
@@ -196,6 +197,13 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         imgs_cpu, extrinsics, intrinsics = self._preprocess_inputs(
             image, extrinsics, intrinsics, process_res, process_res_method
         )
+
+        # Preprocess masks
+        masks_cpu = None
+        if mask is not None:
+            masks_cpu, extrinsics, intrinsics = self._preprocess_inputs_only_resize(
+                mask, extrinsics, intrinsics, process_res, process_res_method
+            )
 
         # Prepare tensors for model
         imgs, ex_t, in_t = self._prepare_model_inputs(imgs_cpu, extrinsics, intrinsics)
@@ -264,6 +272,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                 export_kwargs["colmap"].update(
                     {
                         "image_paths": image,
+                        "masks": masks_cpu,
+                        "num_max_points": num_max_points,
                         "conf_thresh_percentile": conf_thresh_percentile,
                         "process_res_method": process_res_method,
                     }
@@ -271,6 +281,78 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             self._export_results(prediction, export_format, export_dir, **export_kwargs)
 
         return prediction
+    
+    @staticmethod
+    def export_from_save(
+            prediction: Prediction,
+            image_paths: list[str],
+            export_dir: str | None = None,
+            export_format: str = "mini_npz",
+            render_exts: np.ndarray | None = None,
+            render_ixts: np.ndarray | None = None,
+            render_hw: tuple[int, int] | None = None,
+            process_res_method: str = "upper_bound_resize",
+            # GLB export parameters
+            conf_thresh_percentile: float = 40.0,
+            num_max_points: int = 1_000_000,
+            show_cameras: bool = True,
+            # Feat_vis export parameters
+            feat_vis_fps: int = 15,
+            # Other export parameters, e.g., gs_ply, gs_video
+            export_kwargs: Optional[dict] = {},
+        ):
+        
+        if export_dir is not None:
+
+            if "gs" in export_format:
+                if "gs_video" not in export_format:
+                    export_format = f"{export_format}-gs_video"
+                if "gs_video" in export_format:
+                    if "gs_video" not in export_kwargs:
+                        export_kwargs["gs_video"] = {}
+                    export_kwargs["gs_video"].update(
+                        {
+                            "extrinsics": render_exts,
+                            "intrinsics": render_ixts,
+                            "out_image_hw": render_hw,
+                        }
+                    )
+            # Add GLB export parameters
+            if "glb" in export_format:
+                if "glb" not in export_kwargs:
+                    export_kwargs["glb"] = {}
+                export_kwargs["glb"].update(
+                    {
+                        "conf_thresh_percentile": conf_thresh_percentile,
+                        "num_max_points": num_max_points,
+                        "show_cameras": show_cameras,
+                    }
+                )
+            # Add Feat_vis export parameters
+            if "feat_vis" in export_format:
+                if "feat_vis" not in export_kwargs:
+                    export_kwargs["feat_vis"] = {}
+                export_kwargs["feat_vis"].update(
+                    {
+                        "fps": feat_vis_fps,
+                    }
+                )
+            # Add COLMAP export parameters
+            if "colmap" in export_format:
+                if "colmap" not in export_kwargs:
+                    export_kwargs["colmap"] = {}
+                export_kwargs["colmap"].update(
+                    {
+                        "image_paths": image_paths,
+                        "conf_thresh_percentile": conf_thresh_percentile,
+                        "process_res_method": process_res_method,
+                    }
+                )
+            
+            start_time = time.time()
+            export(prediction, export_format, export_dir, **export_kwargs)
+            end_time = time.time()
+            logger.info(f"Export Results Done. Time: {end_time - start_time} seconds")
 
     def _preprocess_inputs(
         self,
@@ -284,6 +366,32 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         start_time = time.time()
         imgs_cpu, extrinsics, intrinsics = self.input_processor(
             image,
+            extrinsics.copy() if extrinsics is not None else None,
+            intrinsics.copy() if intrinsics is not None else None,
+            process_res,
+            process_res_method,
+        )
+        end_time = time.time()
+        logger.info(
+            "Processed Images Done taking",
+            end_time - start_time,
+            "seconds. Shape: ",
+            imgs_cpu.shape,
+        )
+        return imgs_cpu, extrinsics, intrinsics
+    
+    def _preprocess_inputs_only_resize(
+        self,
+        mask: list[np.ndarray | Image.Image | str],
+        extrinsics: np.ndarray | None = None,
+        intrinsics: np.ndarray | None = None,
+        process_res: int = 504,
+        process_res_method: str = "upper_bound_resize",
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Preprocess input images using input processor."""
+        start_time = time.time()
+        imgs_cpu, extrinsics, intrinsics = self.input_processor.resize(
+            mask,
             extrinsics.copy() if extrinsics is not None else None,
             intrinsics.copy() if intrinsics is not None else None,
             process_res,

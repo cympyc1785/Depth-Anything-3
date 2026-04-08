@@ -35,6 +35,57 @@ def construct_list_of_attributes(num_rest: int) -> list[str]:
         attributes.append(f"rot_{i}")
     return attributes
 
+def unproject_from_depth(depths, extrinsics, intrinsics):
+    if depths.ndim == 4:
+        depths = depths.squeeze(-1)  # [B,H,W]
+
+    B, H, W = depths.shape
+    device = depths.device
+    dtype = depths.dtype
+
+    # pixel grid
+    ys, xs = torch.meshgrid(
+        torch.arange(H, device=device, dtype=dtype),
+        torch.arange(W, device=device, dtype=dtype),
+        indexing="ij"
+    )  # [H,W]
+
+    xs = xs.unsqueeze(0).expand(B, -1, -1)  # [B,H,W]
+    ys = ys.unsqueeze(0).expand(B, -1, -1)
+
+    fx = intrinsics[:, 0, 0].unsqueeze(-1).unsqueeze(-1)
+    fy = intrinsics[:, 1, 1].unsqueeze(-1).unsqueeze(-1)
+    cx = intrinsics[:, 0, 2].unsqueeze(-1).unsqueeze(-1)
+    cy = intrinsics[:, 1, 2].unsqueeze(-1).unsqueeze(-1)
+
+    z = depths
+    x = (xs - cx) * z / fx
+    y = (ys - cy) * z / fy
+
+    xyz_cam = torch.stack([x, y, z], dim=-1)  # [B,H,W,3]
+
+    # to homogeneous
+    ones = torch.ones((B, H, W, 1), device=device, dtype=dtype)
+    xyz_cam_h = torch.cat([xyz_cam, ones], dim=-1)  # [B,H,W,4]
+
+    # camera -> world
+    R_w2c = extrinsics[:, :3, :3]
+    t_w2c = extrinsics[:, :3, 3]
+
+    R_c2w = R_w2c.transpose(-1, -2)
+    t_c2w = (-R_c2w @ t_w2c.unsqueeze(-1)).squeeze(-1)
+    
+    c2w = torch.eye(4, device=extrinsics.device, dtype=extrinsics.dtype).unsqueeze(0).repeat(B, 1, 1)  # [B,4,4]
+    c2w[:, :3, :3] = R_c2w
+    c2w[:, :3, 3]  = t_c2w
+
+    xyz_world = torch.einsum(
+        "bij,bhwj->bhwi",
+        c2w,
+        xyz_cam_h
+    )  # [B,H,W,4]
+
+    return xyz_world[..., :3]
 
 def export_ply(
     means: Tensor,  # "gaussian 3"
@@ -42,6 +93,7 @@ def export_ply(
     rotations: Tensor,  # "gaussian 4"
     harmonics: Tensor,  # "gaussian 3 d_sh"
     opacities: Tensor,  # "gaussian"
+    # offsets: Tensor,
     path: Path,
     shift_and_scale: bool = False,
     save_sh_dc_only: bool = True,
@@ -55,6 +107,7 @@ def export_ply(
         scale_factor = means.abs().quantile(0.95, dim=0).max()
         means = means / scale_factor
         scales = scales / scale_factor
+        # offsets = offsets / scale_factor
 
     rotations = rotations.detach().cpu().numpy()
 
@@ -90,6 +143,7 @@ def export_ply(
         opacities[..., None].detach().cpu().numpy(),
         scales.log().detach().cpu().numpy(),
         rotations,
+        # offsets.detach().cpu().numpy(),
     ]
     if match_3dgs_mcmc_dev:
         attributes.pop(1)  # dummy normal is not needed
@@ -100,6 +154,80 @@ def export_ply(
     elements[:] = list(map(tuple, attributes))
     path.parent.mkdir(exist_ok=True, parents=True)
     PlyData([PlyElement.describe(elements, "vertex")]).write(path)
+
+def load_ply(path: Path):
+    """
+    Loader matched EXACTLY to your export_ply()/save_gaussian_ply().
+
+    - scales: stored as log(scales) -> returned as linear scales (exp)
+    - rotations: stored as rot_0..rot_3 in the SAME order as written -> returned unchanged order
+    - opacities: stored as whatever you passed (in your case: inverse_sigmoid(opacity), i.e. logits)
+                 -> returned as logits (DO NOT sigmoid here)
+    - harmonics: if DC-only -> (N,3,1) with DC at [:,:,0]
+    """
+    ply = PlyData.read(str(path))
+    if "vertex" not in ply:
+        raise ValueError(f"PLY has no 'vertex' element: {path}")
+
+    v = ply["vertex"].data
+    names = v.dtype.names or ()
+
+    def req(*cols):
+        missing = [c for c in cols if c not in names]
+        if missing:
+            raise ValueError(f"Missing columns in PLY: {missing}. Available: {sorted(names)}")
+
+    # means
+    req("x", "y", "z")
+    means = np.stack([v["x"], v["y"], v["z"]], axis=1).astype(np.float32)
+
+    # scales: stored as log(scales)
+    req("scale_0", "scale_1", "scale_2")
+    scales_log = np.stack([v["scale_0"], v["scale_1"], v["scale_2"]], axis=1).astype(np.float32)
+    scales = np.exp(scales_log).astype(np.float32)
+
+    # rotations: EXACT column order as written by export_ply()
+    # (Your export uses construct_list_of_attributes(), which for 3DGS is typically rot_0..rot_3)
+    req("rot_0", "rot_1", "rot_2", "rot_3")
+    rotations = np.stack([v["rot_0"], v["rot_1"], v["rot_2"], v["rot_3"]], axis=1).astype(np.float32)
+
+    # opacity: EXACT as stored (in your pipeline, this is logits if inv_opacity=True at save time)
+    if "opacity" in names:
+        opacities = np.asarray(v["opacity"], dtype=np.float32)
+    elif "alpha" in names:
+        opacities = np.asarray(v["alpha"], dtype=np.float32)
+    else:
+        raise ValueError(f"Missing opacity column (expected 'opacity' or 'alpha'). Available: {sorted(names)}")
+
+    # SH DC
+    req("f_dc_0", "f_dc_1", "f_dc_2")
+    f_dc = np.stack([v["f_dc_0"], v["f_dc_1"], v["f_dc_2"]], axis=1).astype(np.float32)
+
+    # Optional SH rest
+    rest_cols = [c for c in names if c.startswith("f_rest_")]
+    # numeric sort f_rest_0, f_rest_1, ...
+    rest_cols = sorted(rest_cols, key=lambda s: int(s.split("_")[-1]))
+
+    if len(rest_cols) == 0:
+        harmonics = f_dc[:, :, None].astype(np.float32)  # (N,3,1)
+    else:
+        f_rest = np.stack([v[c] for c in rest_cols], axis=1).astype(np.float32)  # (N,M)
+        if f_rest.shape[1] % 3 != 0:
+            raise ValueError(f"f_rest dim must be multiple of 3, got {f_rest.shape[1]}")
+        K = 1 + (f_rest.shape[1] // 3)
+        harmonics = np.zeros((means.shape[0], 3, K), dtype=np.float32)
+        harmonics[:, :, 0] = f_dc
+        harmonics[:, :, 1:] = f_rest.reshape(means.shape[0], -1, 3).transpose(0, 2, 1)
+
+    return {
+        "means": torch.from_numpy(means),
+        "scales": torch.from_numpy(scales),
+        "rotations": torch.from_numpy(rotations),
+        "opacities": torch.from_numpy(opacities),   # logits 그대로
+        "harmonics": torch.from_numpy(harmonics),
+        "raw": v,
+    }
+
 
 
 def inverse_sigmoid(x):
@@ -133,7 +261,7 @@ def save_gaussian_ply(
 
     # TODO: prune the sky region here
 
-    # throw away Gaussians at the borders, since they're generally of lower quality.
+    # throw away Gaussians at the borders, since they're generally of lower quality. <- view depth 기준
     if prune_border_gs:
         mask = torch.zeros_like(ctx_depth, dtype=torch.bool)
         gstrim_h = int(8 / 256 * out_h)
@@ -150,6 +278,32 @@ def save_gaussian_ply(
         ).view(-1, 1, 1)
         d_mask = (in_depths[..., 0] <= d_percentile).unsqueeze(-1)
         mask = mask & d_mask
+
+    # # --- scale based pruning ---
+    # prune_by_scale_percent = 0.99
+    # scales_are_log = False
+    # if prune_by_scale_percent is not None and prune_by_scale_percent < 1:
+    #     scales = gaussians.scales  # [1, N, 3] or [N,3]
+
+    #     if scales.ndim == 3:
+    #         scales = scales[0]     # -> [N,3]
+
+    #     scales_lin = scales.exp() if scales_are_log else scales  # [N,3]
+
+    #     scales_vhw = rearrange(
+    #         scales_lin, "(v h w) c -> v h w c", v=src_v, h=out_h, w=out_w
+    #     )  # [V,H,W,3]
+
+    #     scale_metric = scales_vhw.max(dim=-1).values  # [V,H,W]
+
+    #     thr = torch.quantile(
+    #         scale_metric.view(src_v, -1), q=prune_by_scale_percent, dim=1
+    #     ).view(-1, 1, 1)  # [V,1,1]
+
+    #     s_mask = (scale_metric <= thr).unsqueeze(-1)  # [V,H,W,1]
+    #     mask = mask & s_mask
+    
+    
     mask = mask.squeeze(-1)  # v h w
 
     # helper fn, must place after mask
@@ -166,6 +320,7 @@ def save_gaussian_ply(
         rotations=trim_select_reshape(world_rotations),
         harmonics=trim_select_reshape(world_shs),
         opacities=trim_select_reshape(gs_opacities),
+        # offsets=trim_select_reshape(gaussians.offsets),
         path=Path(save_path),
         shift_and_scale=shift_and_scale,
         save_sh_dc_only=save_sh_dc_only,

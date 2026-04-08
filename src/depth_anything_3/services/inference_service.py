@@ -45,6 +45,7 @@ class InferenceService:
         image_paths: List[str],
         export_dir: str,
         export_format: str = "mini_npz-glb",
+        mask_paths: List[str] = None,
         process_res: int = 504,
         process_res_method: str = "upper_bound_resize",
         export_feat_layers: List[int] = None,
@@ -67,6 +68,7 @@ class InferenceService:
         # Prepare inference parameters
         inference_kwargs = {
             "image": image_paths,
+            "mask": mask_paths,
             "export_dir": export_dir,
             "export_format": export_format,
             "process_res": process_res,
@@ -79,6 +81,7 @@ class InferenceService:
             "num_max_points": num_max_points,
             "show_cameras": show_cameras,
             "feat_vis_fps": feat_vis_fps,
+            "infer_gs": "gs" in export_format,
         }
 
         # Add pose data (if exists)
@@ -102,6 +105,7 @@ class InferenceService:
         export_dir: str,
         backend_url: str,
         export_format: str = "mini_npz-glb",
+        mask_paths: List[str] = None,
         process_res: int = 504,
         process_res_method: str = "upper_bound_resize",
         export_feat_layers: List[int] = None,
@@ -126,6 +130,7 @@ class InferenceService:
         # Prepare payload
         payload = {
             "image_paths": image_paths,
+            "mask_paths": mask_paths,
             "export_dir": export_dir,
             "export_format": export_format,
             "process_res": process_res,
@@ -181,6 +186,7 @@ def run_inference(
     export_dir: str,
     model_dir: str,
     device: str = "cuda",
+    mask_paths: List[str] = None,
     backend_url: Optional[str] = None,
     export_format: str = "mini_npz-glb",
     process_res: int = 504,
@@ -204,6 +210,7 @@ def run_inference(
         return service.run_backend_inference(
             image_paths=image_paths,
             export_dir=export_dir,
+            mask_paths=mask_paths,
             backend_url=backend_url,
             export_format=export_format,
             process_res=process_res,
@@ -224,6 +231,7 @@ def run_inference(
             image_paths=image_paths,
             export_dir=export_dir,
             export_format=export_format,
+            mask_paths=mask_paths,
             process_res=process_res,
             process_res_method=process_res_method,
             export_feat_layers=export_feat_layers,

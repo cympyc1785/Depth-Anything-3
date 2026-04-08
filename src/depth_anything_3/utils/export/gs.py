@@ -16,6 +16,7 @@ import os
 from typing import Literal, Optional
 import moviepy.editor as mpy
 import torch
+import json
 
 from depth_anything_3.model.utils.gs_renderer import run_renderer_in_chunk_w_trj_mode
 from depth_anything_3.specs import Prediction
@@ -44,6 +45,15 @@ def export_to_gs_ply(
     save_path = os.path.join(export_dir, f"gs_ply/{idx:04d}.ply")
     if gs_views_interval is None:  # select around 12 views in total
         gs_views_interval = max(pred_depth.shape[0] // 12, 1)
+
+    if prediction.is_metric:
+        scale_factor = prediction.scale_factor
+        if scale_factor is not None:
+            with open(os.path.join(export_dir, "gs_ply", "scale_factor.json"), "w") as f:
+                json.dump(scale_factor, f)
+            # Resize gs_world
+            # gs_world.means = gs_world.means * scale_factor
+    
     save_gaussian_ply(
         gaussians=gs_world,
         save_path=save_path,
@@ -74,9 +84,9 @@ def export_to_gs_video(
         "dolly_zoom",
         "extend",
         "wobble_inter",
-    ] = "extend",
+    ] = "original",
     color_mode: Literal["RGB+D", "RGB+ED"] = "RGB+ED",
-    vis_depth: Optional[Literal["hcat", "vcat"]] = "hcat",
+    vis_depth: Optional[Literal["hcat", "vcat"]] = None,
     enable_tqdm: Optional[bool] = True,
     output_name: Optional[str] = None,
     video_quality: Literal["low", "medium", "high"] = "high",
@@ -84,6 +94,7 @@ def export_to_gs_video(
     gs_world = prediction.gaussians
     # if target poses are not provided, render the (smooth/interpolate) input poses
     if extrinsics is not None:
+        print("\n\nusing given extrinsic\n\n")
         tgt_extrs = extrinsics
     else:
         tgt_extrs = torch.from_numpy(prediction.extrinsics).unsqueeze(0).to(gs_world.means)
@@ -91,6 +102,8 @@ def export_to_gs_video(
             scale_factor = prediction.scale_factor
             if scale_factor is not None:
                 tgt_extrs[:, :, :3, 3] /= scale_factor
+                # gs_world.means = gs_world.means * scale_factor
+                
     tgt_intrs = (
         intrinsics
         if intrinsics is not None
@@ -139,7 +152,7 @@ def export_to_gs_video(
             (video_i.clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
         )  # T x H x W x C, uint8, numpy()
 
-        fps = 24
+        fps = 10
         clip = mpy.ImageSequenceClip(frames, fps=fps)
         output_name = f"{idx:04d}_{trj_mode}" if output_name is None else output_name
         save_path = os.path.join(export_dir, f"gs_video/{output_name}.mp4")
