@@ -23,6 +23,27 @@ from depth_anything_3.utils.geometry import affine_inverse, get_world_rays, samp
 from depth_anything_3.utils.pose_align import batch_align_poses_umeyama
 from depth_anything_3.utils.sh_helpers import rotate_sh
 
+def visualize_depth_offset(depth_offset):
+    import matplotlib.pyplot as plt
+    import os
+    import shutil
+    import imageio
+    
+    imgs = depth_offset[0, :, :, :]
+    imgs = imgs.detach().cpu()
+
+    # img_min, img_max = img.min(), img.max()
+    # img = (img - img_min) / (img_max - img_min + 1e-8)
+    
+    shutil.rmtree("output")
+    os.makedirs("output", exist_ok=True)
+    frames = []
+    for i, img in enumerate(imgs):
+        plt.imsave(f"output/depth_offset_{i}.png", img.numpy(), cmap="gray")
+        frames.append(img.numpy())
+    
+    imageio.mimsave("output/visualize_depth_offset.mp4", frames, fps=10)
+    imageio.mimsave("output/visualize_depth_offset.gif", frames, fps=10)
 
 class GaussianAdapter(nn.Module):
 
@@ -81,8 +102,20 @@ class GaussianAdapter(nn.Module):
         # 1. compute 3DGS means
         # 1.1) offset the predicted depth if needed
         if self.pred_offset_depth:
-            gs_depths = depths + raw_gaussians[..., -1]
+            # depth_offset = raw_gaussians[..., -1]
+
+            # q = torch.quantile(
+            #     depth_offset.reshape(depth_offset.shape[0], -1),  # (B, V*H*W)
+            #     0.95,
+            #     dim=1
+            # )
+            # q = q.reshape(-1, 1, 1, 1)
+            # filtered_depth_offset = torch.where(depth_offset <= q, depth_offset, torch.zeros_like(depth_offset))
+
+            gs_depths = depths
+            # gs_depths = depths + dfiltered_depth_offsetepth_offset
             raw_gaussians = raw_gaussians[..., :-1]
+            # depth_offset = rearrange(depth_offset, "b v h w ... -> b (v h w) ...")
         else:
             gs_depths = depths
         # 1.2) align predicted poses with GT if needed
@@ -99,6 +132,7 @@ class GaussianAdapter(nn.Module):
                 pose_scales, "b -> b () ()"
             )  # [b, i, j]
             gs_depths = gs_depths * rearrange(pose_scales, "b -> b () () ()")  # [b, v, h, w]
+            # depth_offset = depth_offset * rearrange(pose_scales, "b -> b () () ()")
         # 1.3) casting xy in image space
         xy_ray, _ = sample_image_grid((H, W), device)
         xy_ray = xy_ray[None, None, ...].expand(b, v, -1, -1, -1)  # b v h w xy
@@ -116,6 +150,9 @@ class GaussianAdapter(nn.Module):
         )
         gs_means_world = origins + directions * gs_depths[..., None]
         gs_means_world = rearrange(gs_means_world, "b v h w d -> b (v h w) d")
+
+        # offsets_world = directions * depth_offset[..., None]
+        # offsets_world = rearrange(offsets_world, "b v h w d -> b (v h w) d")
 
         # 2. compute other GS attributes
         scales, rotations, sh = raw_gaussians.split((3, 4, 3 * self.d_sh), dim=-1)
@@ -166,6 +203,7 @@ class GaussianAdapter(nn.Module):
             opacities=gs_opacities,
             scales=gs_scales,
             rotations=gs_rotations_world,
+            # offsets=offsets_world,
         )
 
     def get_scale_multiplier(
