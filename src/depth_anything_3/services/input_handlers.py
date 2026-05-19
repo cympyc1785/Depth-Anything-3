@@ -77,7 +77,7 @@ class ImagesHandler(InputHandler):
     """Image directory handler"""
 
     @staticmethod
-    def process(images_dir: str, image_extensions: str = "png,jpg,jpeg") -> List[str]:
+    def process(images_dir: str, image_extensions: str = "png,jpg,jpeg", frame_range: tuple[int, int] = None, frame_interval: int = 1) -> List[str]:
         """Process image directory"""
         InputHandler.validate_path(images_dir, "Images directory")
 
@@ -92,14 +92,18 @@ class ImagesHandler(InputHandler):
             image_files.extend(glob.glob(os.path.join(images_dir, pattern)))
             image_files.extend(glob.glob(os.path.join(images_dir, pattern.upper())))
 
+        num_total_frames = len(image_files)
+
         image_files = sorted(list(set(image_files)))  # Remove duplicates and sort
+
+        image_files = image_files[frame_range[0]:frame_range[1]:frame_interval]
 
         if not image_files:
             raise typer.BadParameter(
                 f"No image files found in {images_dir} with extensions: {extensions}"
             )
 
-        typer.echo(f"Found {len(image_files)} images to process")
+        typer.echo(f"Found {num_total_frames} images and sampled {len(image_files)} images to process")
         return image_files
 
 

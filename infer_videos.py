@@ -229,23 +229,21 @@ splits = [f"dynpose-{i:04d}" for i in range(67, 73)]
 #             )
 # exit()
 
-root_dir = "/data1/cympyc1785/3d_recon/Depth-Anything-3/SceneData/sintel/dataset"
-export_root_dir = "/data1/cympyc1785/data/motion_dataset/DynamicVerse/data/sintel"
+root_dir = "/NHNHOME/WORKSPACE/0226010013_A/cympyc1785/Depth-Anything-3/data/pointodyssey"
+export_root_dir = "/NHNHOME/WORKSPACE/0226010013_A/cympyc1785/Depth-Anything-3/data/pointodyssey"
 ref_dir = export_root_dir
-# video_dir = os.path.join(root_dir, "videos")
-video_dir = os.path.join(root_dir, "inpainted_videos")
+video_dir = os.path.join(root_dir, "videos")
+# video_dir = os.path.join(root_dir, "inpainted_videos")
 
-for vid_name in tqdm(sorted(os.listdir(video_dir))):
+# for vid_name in ["seminar_g110_0315_ego2"]:
+for vid_name in sorted(os.listdir(video_dir)):
     scene_name = vid_name.split(".")[0]
 
-    if scene_name not in os.listdir(ref_dir):
-        print("skip", scene_name)
-        continue
-
-    video_path = os.path.join(video_dir, vid_name)
-    mask_dir = os.path.join(root_dir, "mask", scene_name)
-    # export_dir = os.path.join(root_dir, "da3_preds_no_inpaint", scene_name)
-    export_dir = os.path.join(export_root_dir, scene_name, f"da3_inpaint")
+    # video_path = os.path.join(root_dir, "test", scene_name, "inpainted_video.mp4")
+    video_path = os.path.join(root_dir, "videos", vid_name)
+    mask_dir = os.path.join(root_dir, "test", scene_name, "qwen/Annotations")
+    # export_dir = os.path.join(export_root_dir, "test", scene_name, "da3_inpaint")
+    export_dir = os.path.join(export_root_dir, scene_name, f"da3_no_inpaint")
     
     run_da3_video(model, video_path, fps=24, mask_dir=mask_dir,
         export_dir=export_dir,

@@ -50,7 +50,7 @@ def export_to_npz(
     np.savez_compressed(output_file, **save_dict)
 
 
-@async_call
+# @async_call
 def export_to_mini_npz(
     prediction: Prediction,
     export_dir: str,

@@ -17,7 +17,7 @@ import imageio
 import numpy as np
 
 from depth_anything_3.specs import Prediction
-from depth_anything_3.utils.visualize import visualize_conf
+# from depth_anything_3.utils.visualize import visualize_conf
 
 
 def export_to_conf(
@@ -34,7 +34,7 @@ def export_to_conf(
 
     os.makedirs(os.path.join(export_dir, "conf_vis"), exist_ok=True)
     for idx in range(prediction.conf.shape[0]):
-        conf_vis = visualize_conf(prediction.conf[idx])
+        # conf_vis = visualize_conf(prediction.conf[idx])
         image_vis = images_u8[idx]
         conf_vis = conf_vis.astype(np.uint8)
         image_vis = image_vis.astype(np.uint8)

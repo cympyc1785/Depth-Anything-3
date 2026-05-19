@@ -23,9 +23,10 @@ from .feat_vis import export_to_feat_vis
 from .glb import export_to_glb, _compute_alignment_transform_first_cam_glTF_center_by_points
 from .npz import export_to_mini_npz, export_to_npz
 from .ply import export_to_ply
-from .conf import export_to_conf
-from .sky import export_to_sky
+# from .conf import export_to_conf
+# from .sky import export_to_sky
 from .depth import export_to_depth
+from .images import export_images
 
 from .filter import _depths_to_world_points_with_colors, _create_xyf, _filter_and_downsample 
 
@@ -149,14 +150,16 @@ def export(
         export_to_colmap(prediction, export_dir, **kwargs.get(export_format, {}))
     elif export_format == "ply":
         export_to_ply(prediction, export_dir, **kwargs.get(export_format, {}))
-    elif export_format == "conf":
-        export_to_conf(prediction, export_dir, **kwargs.get(export_format, {}))
-    elif export_format == "sky":
-        export_to_sky(prediction, export_dir, **kwargs.get(export_format, {}))
+    # elif export_format == "conf":
+    #     export_to_conf(prediction, export_dir, **kwargs.get(export_format, {}))
+    # elif export_format == "sky":
+    #     export_to_sky(prediction, export_dir, **kwargs.get(export_format, {}))
     elif export_format == "depth_video":
         export_to_depth_video(prediction, export_dir)
     elif export_format == "depth":
         export_to_depth(prediction, export_dir)
+    elif export_format == "images":
+        export_images(prediction, export_dir)
     else:
         raise ValueError(f"Unsupported export format: {export_format}")
 
